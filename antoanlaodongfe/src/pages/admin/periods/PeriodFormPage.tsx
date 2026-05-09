@@ -1,0 +1,227 @@
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Box, Button, Card, CardContent, MenuItem, Stack, TextField, Typography,
+  Autocomplete, Chip,
+} from '@mui/material';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { useSnackbar } from 'notistack';
+import dayjs from 'dayjs';
+
+import PageHeader from '@/components/common/PageHeader';
+import { departmentApi } from '@/api/departmentApi';
+import { occupationApi } from '@/api/catalogApi';
+import type { Occupation } from '@/api/catalogApi';
+import {
+  useExamPeriod,
+  useCreateExamPeriod,
+  useUpdateExamPeriod,
+} from '@/hooks/useExamPeriods';
+import type { ExamPeriodRequest } from '@/api/examPeriodApi';
+import type { ExamType } from '@/types/enums';
+import { examTypeLabels } from '@/utils/vietnameseLabels';
+
+const toLocalDatetime = (iso?: string) =>
+  iso ? dayjs(iso).format('YYYY-MM-DDTHH:mm') : '';
+const fromLocalDatetime = (local: string) =>
+  local ? dayjs(local).toISOString() : '';
+
+export default function PeriodFormPage() {
+  const { periodId } = useParams();
+  const isEdit = !!periodId;
+  const navigate = useNavigate();
+  const { enqueueSnackbar } = useSnackbar();
+
+  const { data: period } = useExamPeriod(periodId || '');
+  const { data: departments = [] } = useQuery({
+    queryKey: ['departments'],
+    queryFn: () => departmentApi.list(),
+  });
+
+  const { data: occupations = [] } = useQuery({
+    queryKey: ['occupations', 'all'],
+    queryFn: () => occupationApi.list(false),
+  });
+
+  const create = useCreateExamPeriod();
+  const update = useUpdateExamPeriod(periodId || '');
+
+  const [form, setForm] = useState<ExamPeriodRequest>({
+    name: '',
+    description: '',
+    exam_type: 'periodic_atvsld' as ExamType,
+    start_date: '',
+    end_date: '',
+    department_ids: [],
+    target_occupations: [],
+    target_skill_levels: [],
+  });
+
+  useEffect(() => {
+    if (period) {
+      setForm({
+        name: period.name,
+        description: period.description || '',
+        exam_type: period.exam_type,
+        start_date: toLocalDatetime(period.start_date),
+        end_date: toLocalDatetime(period.end_date),
+        department_ids: period.department_ids,
+        target_occupations: period.target_occupations,
+        target_skill_levels: period.target_skill_levels,
+      });
+    }
+  }, [period]);
+
+  // Selected occupation objects
+  const selectedOccs = useMemo(
+    () => occupations.filter((o) => (form.target_occupations || []).includes(o.name)),
+    [occupations, form.target_occupations],
+  );
+
+  // Union of all skill levels from selected occupations
+  const availableSkillLevels = useMemo(() => {
+    if (!selectedOccs.length) return [1, 2, 3, 4, 5, 6, 7];
+    const set = new Set<number>();
+    for (const occ of selectedOccs) {
+      for (const lv of occ.skill_levels) set.add(lv);
+    }
+    return Array.from(set).sort((a, b) => a - b);
+  }, [selectedOccs]);
+
+  const handleSubmit = async () => {
+    const now = dayjs();
+    const startDate = dayjs(form.start_date);
+    const endDate = dayjs(form.end_date);
+
+    if (!isEdit && startDate.isBefore(now)) {
+      enqueueSnackbar('Thời gian bắt đầu phải nằm sau thời gian hiện tại', { variant: 'error' });
+      return;
+    }
+
+    if (endDate.isBefore(startDate)) {
+      enqueueSnackbar('Thời gian kết thúc phải sau thời gian bắt đầu', { variant: 'error' });
+      return;
+    }
+
+    const payload: ExamPeriodRequest = {
+      ...form,
+      start_date: fromLocalDatetime(form.start_date),
+      end_date: fromLocalDatetime(form.end_date),
+    };
+    try {
+      if (isEdit) {
+        await update.mutateAsync(payload);
+        enqueueSnackbar('Đã cập nhật kỳ thi', { variant: 'success' });
+      } else {
+        await create.mutateAsync(payload);
+        enqueueSnackbar('Đã tạo kỳ thi', { variant: 'success' });
+      }
+      navigate('/admin/periods');
+    } catch (e) {
+      enqueueSnackbar((e as Error).message, { variant: 'error' });
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title={isEdit ? 'Sửa kỳ thi' : 'Tạo kỳ thi mới'}
+        subtitle="Thiết lập phạm vi và thời gian của kỳ thi"
+      />
+
+      <Card>
+        <CardContent>
+          <Stack spacing={2.5} sx={{ maxWidth: 900 }}>
+            <TextField
+              fullWidth label="Tên kỳ thi" value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+            />
+            <TextField
+              fullWidth multiline minRows={2} label="Mô tả" value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+            />
+
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+              <TextField
+                select fullWidth label="Loại thi" value={form.exam_type}
+                onChange={(e) => setForm({ ...form, exam_type: e.target.value as ExamType })}
+              >
+                {Object.entries(examTypeLabels).map(([v, l]) => (
+                  <MenuItem key={v} value={v}>{l}</MenuItem>
+                ))}
+              </TextField>
+            </Stack>
+
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+              <TextField
+                fullWidth type="datetime-local" label="Bắt đầu"
+                value={form.start_date}
+                onChange={(e) => setForm({ ...form, start_date: e.target.value })}
+                slotProps={{ inputLabel: { shrink: true } }}
+              />
+              <TextField
+                fullWidth type="datetime-local" label="Kết thúc"
+                value={form.end_date}
+                onChange={(e) => setForm({ ...form, end_date: e.target.value })}
+                slotProps={{ inputLabel: { shrink: true } }}
+              />
+            </Stack>
+
+            <Autocomplete
+              multiple
+              options={departments}
+              getOptionLabel={(o) => `${o.code} — ${o.name}`}
+              value={departments.filter((d) => (form.department_ids || []).includes(d.id))}
+              onChange={(_, newValue) => setForm({ ...form, department_ids: newValue.map((d) => d.id) })}
+              renderInput={(params) => (
+                <TextField {...params} label="Phòng ban áp dụng (để trống = tất cả)" />
+              )}
+            />
+
+            <Autocomplete
+              multiple
+              options={occupations}
+              getOptionLabel={(o) => `${o.code} — ${o.name}`}
+              value={selectedOccs}
+              onChange={(_, newValue) => setForm({
+                ...form,
+                target_occupations: newValue.map((o) => o.name),
+                // Reset skill levels to only those available for new selections
+                target_skill_levels: form.target_skill_levels.filter((lv) =>
+                  newValue.some((o) => o.skill_levels.includes(lv)),
+                ),
+              })}
+              renderInput={(params) => (
+                <TextField {...params} label="Nghề áp dụng (để trống = tất cả)" />
+              )}
+            />
+
+            <Autocomplete
+              multiple
+              options={availableSkillLevels}
+              getOptionLabel={(o) => `Bậc ${o}`}
+              value={form.target_skill_levels || []}
+              onChange={(_, v) => setForm({ ...form, target_skill_levels: v as number[] })}
+              renderInput={(params) => <TextField {...params} label="Bậc tay nghề áp dụng (để trống = tất cả)" />}
+            />
+
+            <Typography variant="caption" color="text.secondary">
+              Kỳ thi là khung chứa nhiều phòng thi. Sau khi tạo, bạn sẽ thêm các phòng thi cụ thể (online/onsite) cho từng phòng ban.
+            </Typography>
+
+            <Box sx={{ display: 'flex', gap: 2, mt: 2 }}>
+              <Button variant="outlined" onClick={() => navigate('/admin/periods')}>Hủy</Button>
+              <Button
+                variant="contained"
+                onClick={handleSubmit}
+                disabled={!form.name || !form.start_date || !form.end_date || create.isPending || update.isPending}
+              >
+                {isEdit ? 'Cập nhật' : 'Tạo kỳ thi'}
+              </Button>
+            </Box>
+          </Stack>
+        </CardContent>
+      </Card>
+    </>
+  );
+}
